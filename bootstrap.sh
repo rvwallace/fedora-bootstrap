@@ -57,6 +57,48 @@ run_sudo() {
   fi
 }
 
+# Refuse a direct root login. If the script was invoked with sudo, re-exec
+# as $SUDO_USER so fonts, dotfiles, and chsh target that account. System
+# package installs still go through run_sudo.
+resolve_target_user() {
+  [[ $EUID -eq 0 ]] || return 0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help) return 0 ;;
+    esac
+  done
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    log "Running as root; re-executing as $SUDO_USER for user-level setup"
+    exec sudo -u "$SUDO_USER" -H -- "$0" "$@"
+  fi
+  warn "Refusing to run as root. Run ./bootstrap.sh as the user whose environment should be configured; it uses sudo for system packages."
+  exit 1
+}
+
+# Prefer a zsh path listed in /etc/shells. Fedora's /usr/sbin/zsh is often
+# the first hit on PATH but is not a valid chsh target.
+resolve_zsh_path() {
+  local candidate
+  local -a candidates=()
+  [[ -x /usr/bin/zsh ]] && candidates+=(/usr/bin/zsh)
+  [[ -x /bin/zsh ]] && candidates+=(/bin/zsh)
+  if command -v zsh >/dev/null 2>&1; then
+    candidates+=("$(command -v zsh)")
+  fi
+  for candidate in "${candidates[@]}"; do
+    if [[ -r /etc/shells ]] && grep -Fxq "$candidate" /etc/shells; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  if [[ "${DRY_RUN:-false}" == true && ${#candidates[@]} -gt 0 ]]; then
+    printf '%s\n' "${candidates[0]}"
+    return 0
+  fi
+  return 1
+}
+
 load_conf() {
   if [[ -f "$CONF_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -141,15 +183,18 @@ enable_flathub() {
   fi
 
   log "Enabling Flathub"
-  run flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  run_sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 }
 
 create_local_bin() {
-  log "Ensuring ~/.local/bin exists and is in PATH"
-  run mkdir -p "$HOME/.local/bin"
-  export PATH="$HOME/.local/bin:$PATH"
+  log "Ensuring user bin dirs exist and are in PATH"
+  local dir
+  for dir in "$HOME/.local/bin" "$HOME/go/bin" "$HOME/.bun/bin"; do
+    run mkdir -p "$dir"
+  done
+  export PATH="$HOME/.local/bin:$HOME/go/bin:$HOME/.bun/bin:$PATH"
   # Add to ~/.bash_profile and ~/.zprofile if absent
-  local export_line="export PATH=\"\$HOME/.local/bin:\$PATH\""
+  local export_line="export PATH=\"\$HOME/.local/bin:\$HOME/go/bin:\$HOME/.bun/bin:\$PATH\""
   local profile
   for profile in "$HOME/.bash_profile" "$HOME/.zprofile"; do
     if ! grep -Fxq "$export_line" "$profile" 2>/dev/null; then
@@ -326,49 +371,78 @@ install_geistmono() {
     run_in_project nerd-font-installer bash install-nerd-font.sh GeistMono
 }
 
+is_lazyvim_config() {
+  local dir="$1"
+  local resolved="$dir"
+  if [[ -L "$dir" ]]; then
+    resolved=$(readlink "$dir")
+    [[ "$resolved" == /* ]] || resolved="$(dirname -- "$dir")/$resolved"
+  fi
+  [[ -n "${PROJECTS_ROOT:-}" && "$resolved" == "$PROJECTS_ROOT/lazyvim" ]] && return 0
+  if [[ -d "$resolved/.git" ]] && command -v git >/dev/null 2>&1; then
+    git -C "$resolved" remote -v 2>/dev/null | grep -Eq 'github.com[/:]rvwallace/lazyvim(\.git)?' && return 0
+  fi
+  return 1
+}
+
 setup_lazyvim() {
   if [[ "$ENABLE_LAZYVIM" != true ]]; then
     log "LazyVim setup disabled"
     return 0
   fi
 
-  local config_dir="$HOME/.config/lazyvim"
+  local nvim_dir="$HOME/.config/nvim"
   local project_dir="$PROJECTS_ROOT/lazyvim"
-  if [[ -e "$config_dir" || -L "$config_dir" ]]; then
-    log "Using existing path $config_dir"
-  else
-    run mkdir -p "$HOME/.config" || return 1
-    if [[ -d "$project_dir" ]]; then
-      # ln resolves a relative target from inside ~/.config.
-      [[ "$project_dir" == /* ]] || project_dir="$PWD/$project_dir"
-      run ln -s "$project_dir" "$config_dir" || return 1
-    else
-      run git clone https://github.com/rvwallace/lazyvim.git "$config_dir" || return 1
+  local backup
+
+  if [[ -e "$nvim_dir" || -L "$nvim_dir" ]]; then
+    if is_lazyvim_config "$nvim_dir"; then
+      log "LazyVim already configured at $nvim_dir"
+      return 0
     fi
+    backup="${nvim_dir}.bak-$(date +%Y%m%dT%H%M%S)"
+    log "Backing up existing Neovim config to $backup"
+    run mv "$nvim_dir" "$backup" || return 1
   fi
-  log "Launch LazyVim with NVIM_APPNAME=lazyvim nvim"
+
+  run mkdir -p "$HOME/.config" || return 1
+  if [[ -d "$project_dir" ]]; then
+    [[ "$project_dir" == /* ]] || project_dir="$PWD/$project_dir"
+    run ln -s "$project_dir" "$nvim_dir" || return 1
+  else
+    run git clone https://github.com/rvwallace/lazyvim.git "$nvim_dir" || return 1
+  fi
+  log "LazyVim is the default Neovim config at $nvim_dir"
 }
 
+
 change_default_shell_to_zsh() {
-  local current_shell="${SHELL:-}"
+  local target_user current_shell zsh_path
+  target_user="$(id -un)"
+  if command -v getent >/dev/null 2>&1; then
+    current_shell="$(getent passwd "$target_user" | cut -d: -f7)"
+  else
+    current_shell="${SHELL:-}"
+  fi
   if [[ "${current_shell##*/}" == zsh ]]; then
-    log "Default shell already zsh"
+    log "Default shell already zsh ($current_shell)"
+    return 0
+  fi
+  if ! zsh_path="$(resolve_zsh_path)"; then
+    warn "zsh not found or not listed in /etc/shells; skipping chsh"
     return 0
   fi
   if [[ "$DRY_RUN" == true ]]; then
-    log "Would set the default shell to zsh after successful setup"
-  elif command -v zsh >/dev/null 2>&1; then
-    local zsh_path
-    zsh_path="$(command -v zsh)"
-    log "Changing default shell to $zsh_path"
-    run_sudo chsh -s "$zsh_path" "$(id -un)" || warn "Could not change default shell"
-  else
-    warn "zsh not found; skipping chsh"
+    log "Would set the default shell for $target_user to $zsh_path"
+    return 0
   fi
+  log "Changing default shell for $target_user to $zsh_path"
+  run_sudo chsh -s "$zsh_path" "$target_user" || warn "Could not change default shell"
 }
 
 
 main() {
+  resolve_target_user "$@"
   parse_args "$@"
   ensure_fedora
   load_conf
@@ -399,7 +473,9 @@ main() {
     warn "Toolbox setup failed."
     setup_failed=true
   fi
-  if ! (ensure_project tmux-conf && run_in_project tmux-conf ./bootstrap.sh); then
+  if ! (ensure_project tmux-conf &&
+    run_in_project tmux-conf ./scripts/install-deps.sh --install &&
+    run_in_project tmux-conf ./bootstrap.sh); then
     warn "tmux-conf setup failed."
     setup_failed=true
   fi

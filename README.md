@@ -2,7 +2,9 @@
 
 Set up a DNF-based Fedora workstation, server, or WSL environment. Run the
 script as the user whose environment you want to configure. It uses sudo
-for system changes and can be rerun.
+for system packages and can be rerun. A direct root run is refused. If you
+invoke it with `sudo ./bootstrap.sh`, it re-executes as `$SUDO_USER` so
+fonts, shell, tmux, and Neovim config land in that account.
 
 ## Run it
 
@@ -24,9 +26,9 @@ plan for Fedora 43 or newer. A regular run requires Fedora.
   Flathub setup is on by default and skipped in containers.
 - Installs the `development-tools` group, then the Fedora package list and
   the Terra tools `starship`, `yazi`, and `ouch`. Fedora supplies tools
-  including `helix`, `lazygit`, `eza`, `zoxide`, `uv`, and `neovim`.
-  DNF prefers Fedora packages, then Terra, then RPM Fusion with the default
-  repository priorities. The tmux setup can enable COPRs for its dependencies.
+  including `helix`, `lazygit`, `eza`, `zoxide`, `uv`, `neovim`, and
+  `golang`. DNF prefers Fedora packages, then Terra, then RPM Fusion with
+  the default repository priorities.
 - Copies the bundled Helix configuration if `~/.config/helix/config.toml`
   is absent. It can also install Rust via rustup when enabled.
 - Installs GeistMono Nerd Font for the current user if fontconfig does
@@ -35,12 +37,16 @@ plan for Fedora 43 or newer. A regular run requires Fedora.
 - Reuses existing `sc-zsh`, `toolbox`, and `tmux-conf` directories under
   `PROJECTS_ROOT`, or clones missing projects from GitHub. It runs
   `bash setup.sh` for sc-zsh, `./bootstrap.sh` then `./toolbox install`
-  for toolbox, and `./bootstrap.sh` for tmux-conf. It changes the login
-  shell to Zsh only after sc-zsh setup succeeds.
-- Sets up LazyVim by default. If `~/.config/lazyvim` is absent, it links an
-  existing `$PROJECTS_ROOT/lazyvim` checkout or clones
-  `rvwallace/lazyvim` directly into `~/.config/lazyvim`. Launch it with
-  `NVIM_APPNAME=lazyvim nvim`. The script leaves `~/.config/nvim` alone.
+  for toolbox, and `./scripts/install-deps.sh --install` followed by
+  `./bootstrap.sh` for tmux-conf (Go, bun, sesh, and other tmux/toolbox
+  dependencies). It changes the login shell to `/usr/bin/zsh` when that
+  path is listed in `/etc/shells`, and only after sc-zsh setup succeeds.
+- Sets up LazyVim as the default Neovim config at `~/.config/nvim`. If
+  that path is not already a LazyVim checkout, the existing directory is
+  renamed to `~/.config/nvim.bak-<timestamp>`. The script then links an
+  existing `$PROJECTS_ROOT/lazyvim` checkout or clones `rvwallace/lazyvim`
+  into `~/.config/nvim`. Launch Neovim with `nvim`; `NVIM_APPNAME` is not
+  required.
 
 ## Package notes
 

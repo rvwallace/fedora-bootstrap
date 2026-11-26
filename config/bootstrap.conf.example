@@ -1,17 +1,16 @@
-# Bootstrap configuration
-# Copy this to bootstrap.conf and modify as needed
+# Copy this file to bootstrap.conf for local overrides.
 
-# Set to false to skip Flatpak setup (useful in containers)
+# Set to false to skip Flatpak and Flathub setup.
 # ENABLE_FLATPAK=false
 
-# Set to true to install Rust toolchain and cargo tools
+# Set to true to install the Rust toolchain with rustup when cargo is absent.
 # ENABLE_RUST=true
 
-# Set to true to run dotfiles installer located at DOTFILES_INSTALL_PATH
-# INSTALL_DOTFILES=true
+# Set to false to skip LazyVim setup.
+# ENABLE_LAZYVIM=false
 
-# Absolute path to dotfiles directory containing install.sh
-# DOTFILES_INSTALL_PATH="$HOME/silentcastle/projects/dot_zshrc"
+# Location of companion project checkouts.
+# PROJECTS_ROOT="$HOME/silentcastle/projects"
 
-# Additional packages to install via dnf
+# Additional packages to install via DNF.
 # EXTRA_PACKAGES=(package1 package2 package3)

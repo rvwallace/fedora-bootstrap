@@ -14,8 +14,8 @@ PKG_FILE="${ROOT_DIR}/config/packages.conf"
 ENABLE_RUST=${ENABLE_RUST:-false}
 ENABLE_FLATPAK=${ENABLE_FLATPAK:-true}
 EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]:-}")
-INSTALL_DOTFILES=${INSTALL_DOTFILES:-false}
-DOTFILES_INSTALL_PATH=${DOTFILES_INSTALL_PATH:-}
+ENABLE_LAZYVIM=${ENABLE_LAZYVIM:-true}
+PROJECTS_ROOT=${PROJECTS_ROOT:-"$HOME/silentcastle/projects"}
 
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 warn() { printf "[WARN] %s\n" "$*" >&2; }
@@ -97,7 +97,7 @@ enable_rpmfusion() {
   fi
   local free_pkg="rpmfusion-free-release-${ver}.noarch"
   local nonfree_pkg="rpmfusion-nonfree-release-${ver}.noarch"
-  if rpm -q "$free_pkg" "$nonfree_pkg" >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" != true ]] && rpm -q "$free_pkg" "$nonfree_pkg" >/dev/null 2>&1; then
     log "RPM Fusion already enabled"
     return 0
   fi
@@ -172,7 +172,8 @@ install_dev_tools_group() {
 }
 
 enable_terra() {
-  if [[ -f /etc/yum.repos.d/terra.repo ]] || rpm -q terra-release >/dev/null 2>&1; then
+  if [[ -f /etc/yum.repos.d/terra.repo ]] ||
+    { [[ "$DRY_RUN" != true ]] && rpm -q terra-release >/dev/null 2>&1; }; then
     log "Terra already enabled"
     return 0
   fi
@@ -263,54 +264,58 @@ setup_helix_config() {
   run cp "$source_conf" "$hx_conf"
 }
 
-setup_lazyvim() {
-  # Only if not already configured
-  local nvconf="$HOME/.config/nvim"
-  if [[ -d "$nvconf" && -f "$nvconf/init.lua" ]]; then
-    log "Neovim config already present; skipping LazyVim clone"
+ensure_project() {
+  local name="$1"
+  local project_dir="$PROJECTS_ROOT/$name"
+  if [[ -d "$project_dir" ]]; then
+    log "Using $project_dir as-is"
     return 0
   fi
-  log "Setting up LazyVim starter"
-  if ! run git clone https://github.com/LazyVim/starter "$nvconf"; then
-    warn "Failed to setup LazyVim"
-    return 0
+  if [[ -e "$project_dir" || -L "$project_dir" ]]; then
+    warn "Cannot use $project_dir as a project directory"
+    return 1
   fi
-  run rm -rf "$nvconf/.git"
+  run mkdir -p "$PROJECTS_ROOT" &&
+    run git clone "https://github.com/rvwallace/$name.git" "$project_dir"
 }
 
-install_dotfiles_from_path() {
-  if [[ "$INSTALL_DOTFILES" != true ]]; then
-    log "Dotfiles install disabled"
-    return 2
+run_in_project() {
+  local project_dir="$PROJECTS_ROOT/$1"
+  shift
+  log "In $project_dir"
+  if [[ "$DRY_RUN" == true ]]; then
+    run "$@"
+  else
+    (cd -- "$project_dir" && run "$@")
+  fi
+}
+
+setup_lazyvim() {
+  if [[ "$ENABLE_LAZYVIM" != true ]]; then
+    log "LazyVim setup disabled"
+    return 0
   fi
 
-  if [[ -z "$DOTFILES_INSTALL_PATH" ]]; then
-    warn "DOTFILES_INSTALL_PATH not set; skipping dotfiles install"
-    return 1
+  local config_dir="$HOME/.config/lazyvim"
+  local project_dir="$PROJECTS_ROOT/lazyvim"
+  if [[ -e "$config_dir" || -L "$config_dir" ]]; then
+    log "Using existing path $config_dir"
+  else
+    run mkdir -p "$HOME/.config" || return 1
+    if [[ -d "$project_dir" ]]; then
+      # ln resolves a relative target from inside ~/.config.
+      [[ "$project_dir" == /* ]] || project_dir="$PWD/$project_dir"
+      run ln -s "$project_dir" "$config_dir" || return 1
+    else
+      run git clone https://github.com/rvwallace/lazyvim.git "$config_dir" || return 1
+    fi
   fi
-
-  if [[ ! -d "$DOTFILES_INSTALL_PATH" ]]; then
-    warn "Dotfiles path '$DOTFILES_INSTALL_PATH' not found; skipping dotfiles install"
-    return 1
-  fi
-
-  local install_script="$DOTFILES_INSTALL_PATH/install.sh"
-  if [[ ! -f "$install_script" ]]; then
-    warn "Dotfiles install script not found at $install_script; skipping dotfiles install"
-    return 1
-  fi
-
-  log "Running dotfiles installer from $DOTFILES_INSTALL_PATH"
-  if ! (cd "$DOTFILES_INSTALL_PATH" && run bash ./install.sh); then
-    warn "Dotfiles installer reported failure"
-    return 1
-  fi
-
-  return 0
+  log "Launch LazyVim with NVIM_APPNAME=lazyvim nvim"
 }
 
 change_default_shell_to_zsh() {
-  if [[ "${SHELL##*/}" == zsh ]]; then
+  local current_shell="${SHELL:-}"
+  if [[ "${current_shell##*/}" == zsh ]]; then
     log "Default shell already zsh"
     return 0
   fi
@@ -320,7 +325,7 @@ change_default_shell_to_zsh() {
     local zsh_path
     zsh_path="$(command -v zsh)"
     log "Changing default shell to $zsh_path"
-    run_sudo chsh -s "$zsh_path" "$USER" || warn "Could not change default shell"
+    run_sudo chsh -s "$zsh_path" "$(id -un)" || warn "Could not change default shell"
   else
     warn "zsh not found; skipping chsh"
   fi
@@ -340,20 +345,33 @@ main() {
   install_packages
   setup_helix_config
   install_rust_and_cargo_tools
-  setup_lazyvim
-  local dotfiles_status
-  if install_dotfiles_from_path; then
-    dotfiles_status=0
+  local setup_failed=false
+  local sc_zsh_ready=false
+  if ensure_project sc-zsh && run_in_project sc-zsh bash setup.sh; then
+    sc_zsh_ready=true
   else
-    dotfiles_status=$?
+    warn "sc-zsh setup failed. Skipping the default shell change."
+    setup_failed=true
   fi
-
-  if [[ "$dotfiles_status" -eq 0 ]]; then
+  if ! (ensure_project toolbox &&
+    run_in_project toolbox ./bootstrap.sh &&
+    run_in_project toolbox ./toolbox install); then
+    warn "Toolbox setup failed."
+    setup_failed=true
+  fi
+  if ! (ensure_project tmux-conf && run_in_project tmux-conf ./bootstrap.sh); then
+    warn "tmux-conf setup failed."
+    setup_failed=true
+  fi
+  if ! setup_lazyvim; then
+    warn "LazyVim setup failed."
+    setup_failed=true
+  fi
+  if [[ "$sc_zsh_ready" == true ]]; then
     change_default_shell_to_zsh
-  elif [[ "$dotfiles_status" -eq 2 ]]; then
-    log "Default shell left unchanged (dotfiles install skipped)"
-  else
-    warn "Skipping default shell change because dotfiles install did not run"
+  fi
+  if [[ "$setup_failed" == true ]]; then
+    return 1
   fi
   if [[ "$DRY_RUN" == true ]]; then
     log "Dry run complete."

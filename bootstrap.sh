@@ -125,48 +125,47 @@ install_dev_tools_group() {
   run_sudo dnf group install -y 'development-tools'
 }
 
-install_copr_and_extra() {
-  if ! command -v dnf >/dev/null 2>&1; then
-    warn "dnf not found; skipping COPR setup"
+enable_terra() {
+  if [[ -f /etc/yum.repos.d/terra.repo ]] || rpm -q terra-release >/dev/null 2>&1; then
+    log "Terra already enabled"
     return 0
   fi
+  log "Enabling Terra"
+  # DNF expands $releasever in the repository URL.
+  # shellcheck disable=SC2016
+  run_sudo dnf install -y --nogpgcheck \
+    --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' terra-release
+}
 
-  # Install COPR plugin if not available
-  if ! dnf copr --help >/dev/null 2>&1; then
-    log "Installing dnf-plugins-core for COPR support"
-    run_sudo dnf install -y dnf-plugins-core || {
-      warn "Failed to install COPR plugin"
-      return 0
-    }
-  fi
-
-  # Enable COPR repos from packages.conf
-  for repo in "${COPR_REPOS[@]:-}"; do
-    log "Enabling COPR repo: $repo"
-    run_sudo dnf -y copr enable "$repo" || warn "Could not enable COPR $repo"
+install_package_list() {
+  local label="$1"
+  shift
+  local package
+  local to_install=()
+  for package in "$@"; do
+    [[ -n "$package" ]] || continue
+    rpm -q --whatprovides "$package" >/dev/null 2>&1 || to_install+=("$package")
   done
+  if (("${#to_install[@]}" == 0)); then
+    log "All $label packages already installed"
+  else
+    log "Installing $label packages"
+    # Lower priority numbers win. Fedora repositories normally default to 99.
+    run_sudo dnf --setopt='terra*.priority=100' --setopt='rpmfusion*.priority=110' \
+      install -y --skip-unavailable "${to_install[@]}"
+  fi
 }
 
 install_packages() {
-  if ! command -v dnf >/dev/null 2>&1; then
-    warn "dnf not found; cannot install packages"
-    return 0
-  fi
-  # Get package list from packages.conf
-  local pkgs=("${DNF_ALL[@]:-}")
-  # Merge EXTRA_PACKAGES from bootstrap.conf
-  pkgs+=("${EXTRA_PACKAGES[@]:-}")
-  # Install missing packages
-  local to_install=()
-  for p in "${pkgs[@]}"; do
-    rpm -q "$p" >/dev/null 2>&1 || to_install+=("$p")
-  done
-  if ((${#to_install[@]} == 0)); then
-    log "All packages already installed"
-  else
-    log "Installing ${#to_install[@]} packages via dnf"
-    # Use --skip-unavailable for cross-version compatibility (e.g., wget conflict on Fedora 43)
-    run_sudo dnf install -y --skip-unavailable "${to_install[@]}"
+  local kubectl_package=kubernetes1.37-client
+  case "${VERSION_ID:-}" in
+    42) kubectl_package=/usr/bin/kubectl ;;
+    [0-3][0-9]|4[01]) kubectl_package=kubernetes-client ;;
+  esac
+  install_package_list Fedora "${DNF_ALL[@]}" "$kubectl_package"
+  install_package_list Terra "${DNF_TERRA[@]}"
+  if [[ -n "${EXTRA_PACKAGES[*]:-}" ]]; then
+    install_package_list extra "${EXTRA_PACKAGES[@]}"
   fi
 }
 
@@ -194,32 +193,6 @@ install_rust_and_cargo_tools() {
   fi
 }
 
-install_dra() {
-  # Install dra (Download Release Assets) - foundational tool for GitHub releases
-  if ! command -v dra >/dev/null 2>&1; then
-    log "Installing dra (Download Release Assets)"
-    curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/devmatteini/dra/refs/heads/main/install.sh | bash -s -- --to ~/.local/bin || warn "Failed to install dra"
-  fi
-}
-
-install_dra_tools() {
-  # Install tools from GitHub releases using dra
-  if ! command -v dra >/dev/null 2>&1; then
-    warn "dra not available; skipping dra-based tools installation"
-    return 0
-  fi
-
-  # Install tools defined in DRA_TOOLS array from packages.conf
-  for tool_repo in "${DRA_TOOLS[@]:-}"; do
-    local tool_name
-    tool_name="${tool_repo##*/}"  # Extract repo name as tool name
-    if ! command -v "$tool_name" >/dev/null 2>&1; then
-      log "Installing $tool_name via dra"
-      dra download --install --output ~/.local/bin -a "$tool_repo" || warn "Failed to install $tool_name via dra"
-    fi
-  done
-}
-
 setup_helix_config() {
   local hx_dir="$HOME/.config/helix"
   local hx_conf="$hx_dir/config.toml"
@@ -235,7 +208,7 @@ setup_helix_config() {
     return 1
   fi
 
-  log "Installing Helix config from ${source_conf#$ROOT_DIR/} to ${hx_conf#$HOME/}"
+  log "Installing Helix config from ${source_conf#"$ROOT_DIR"/} to ${hx_conf#"$HOME"/}"
   mkdir -p "$hx_dir"
   cp "$source_conf" "$hx_conf"
 }
@@ -308,13 +281,11 @@ main() {
   load_packages
   create_local_bin
   enable_rpmfusion
+  enable_terra
   enable_flathub
-  install_copr_and_extra
   install_dev_tools_group
   install_packages
   setup_helix_config
-  install_dra
-  install_dra_tools
   install_rust_and_cargo_tools
   setup_lazyvim
   local dotfiles_status

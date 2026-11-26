@@ -9,3 +9,6 @@ Thumbs.db
 *.swo
 *.swn
 *~
+
+# Local bootstrap configuration
+/config/bootstrap.conf

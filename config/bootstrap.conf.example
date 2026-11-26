@@ -4,9 +4,6 @@
 # Set to false to skip Flatpak setup (useful in containers)
 # ENABLE_FLATPAK=false
 
-# Set to true to skip GUI applications and GNOME setup
-# HEADLESS=true
-
 # Set to true to install Rust toolchain and cargo tools
 # ENABLE_RUST=true
 

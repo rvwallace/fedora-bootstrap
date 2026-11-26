@@ -334,6 +334,26 @@ setup_helix_config() {
   run cp "$source_conf" "$hx_conf"
 }
 
+setup_starship_config() {
+  local st_dir="$HOME/.config"
+  local st_conf="$st_dir/starship.toml"
+  local source_conf="${ROOT_DIR}/files/starship/starship.toml"
+
+  if [[ -e "$st_conf" || -L "$st_conf" ]]; then
+    log "Starship config already exists; leaving as-is"
+    return 0
+  fi
+
+  if [[ ! -f "$source_conf" ]]; then
+    warn "Source starship config not found at $source_conf; skipping"
+    return 1
+  fi
+
+  log "Installing Starship config from ${source_conf#"$ROOT_DIR"/} to ${st_conf#"$HOME"/}"
+  run mkdir -p "$st_dir"
+  run cp "$source_conf" "$st_conf"
+}
+
 ensure_project() {
   local name="$1"
   local project_dir="$PROJECTS_ROOT/$name"
@@ -454,6 +474,7 @@ main() {
   install_dev_tools_group
   install_packages
   setup_helix_config
+  setup_starship_config
   install_rust_and_cargo_tools
   local setup_failed=false
   local sc_zsh_ready=false

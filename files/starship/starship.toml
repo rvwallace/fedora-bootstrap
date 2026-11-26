@@ -1,0 +1,96 @@
+"$schema" = 'https://starship.rs/config-schema.json'
+
+# Keep the blank separator and the two-line prompt layout.
+add_newline = true
+command_timeout = 1000
+
+# Keep the input line stable; its color indicates the previous command status.
+format = """
+$directory\
+$git_branch\
+$git_status\
+$aws\
+$terraform\
+$kubernetes\
+${env_var.CHEF_ENV}\
+$docker_context\
+$cmd_duration\
+$line_break\
+$character"""
+
+[aws]
+style = "bold blue"
+force_display = true
+symbol = ""
+
+[aws.region_aliases]
+us-east-1 = 'e1'
+us-east-2 = 'e2'
+us-west-1 = 'w1'
+us-west-2 = 'w2'
+
+[directory]
+truncation_length = 3
+truncation_symbol = '…/'
+truncate_to_repo = true
+
+[status]
+format = '[$symbol \[$status\] x]($style) '
+symbol = 'x'
+map_symbol = false
+pipestatus = false
+disabled = true
+
+[terraform]
+format = '[$workspace ($version)](bold purple) '
+style = "bold magenta"
+
+[git_branch]
+symbol = ""
+disabled = false
+
+[git_status]
+format = '([\[$all_status$ahead_behind\]]($style) )'
+style = 'bold red'
+conflicted = '=${count}'
+untracked = '?${count}'
+stashed = '${count}$'
+modified = '!${count}'
+staged = '+${count}'
+renamed = '>${count}'
+deleted = '-${count}'
+typechanged = '~${count}'
+ahead = '⇡${count}'
+behind = '⇣${count}'
+diverged = '⇕⇡${ahead_count}⇣${behind_count}'
+
+[time]
+disabled = true
+time_format = '%T'
+
+[character]
+success_symbol = '[CMD>](bold green)'
+error_symbol = '[CMD>](bold red)'
+
+[kubernetes]
+format = '[$context ($namespace)]($style)'
+disabled = false
+
+[kubernetes.context_aliases]
+'dev.local.cluster.k8s' = 'dev'
+'.*cluster/(?P<var_cluster>.+)' = '$var_cluster'
+
+[kubernetes.user_aliases]
+'dev.local.cluster.k8s' = 'dev'
+'root/.*' = 'root'
+
+[env_var.CHEF_ENV]
+format = "with [$env_value]($style) "
+style = "green bold"
+
+[docker_context]
+format = '[docker: $context](blue bold)'
+
+[cmd_duration]
+min_time = 0
+format = '[$duration](dimmed white) '

@@ -30,7 +30,10 @@ plan for Fedora 43 or newer. A regular run requires Fedora.
   `golang`. DNF prefers Fedora packages, then Terra, then RPM Fusion with
   the default repository priorities.
 - Copies the bundled Helix configuration if `~/.config/helix/config.toml`
-  is absent. It can also install Rust via rustup when enabled.
+  is absent, and the bundled Starship configuration
+  (`files/starship/starship.toml`, with the `CMD>` prompt character) if
+  `~/.config/starship.toml` is absent. It can also install Rust via rustup
+  when enabled.
 - Installs GeistMono Nerd Font for the current user if fontconfig does
   not already list it. The script reuses `$PROJECTS_ROOT/nerd-font-installer`
   or clones it and runs `bash install-nerd-font.sh GeistMono`.

@@ -26,9 +26,12 @@ plan for Fedora 43 or newer. A regular run requires Fedora.
   the Terra tools `starship`, `yazi`, and `ouch`. Fedora supplies tools
   including `helix`, `lazygit`, `eza`, `zoxide`, `uv`, and `neovim`.
   DNF prefers Fedora packages, then Terra, then RPM Fusion with the default
-  repository priorities. The script enables no COPRs and uses no `dra`.
+  repository priorities. The tmux setup can enable COPRs for its dependencies.
 - Copies the bundled Helix configuration if `~/.config/helix/config.toml`
   is absent. It can also install Rust via rustup when enabled.
+- Installs GeistMono Nerd Font for the current user if fontconfig does
+  not already list it. The script reuses `$PROJECTS_ROOT/nerd-font-installer`
+  or clones it and runs `bash install-nerd-font.sh GeistMono`.
 - Reuses existing `sc-zsh`, `toolbox`, and `tmux-conf` directories under
   `PROJECTS_ROOT`, or clones missing projects from GitHub. It runs
   `bash setup.sh` for sc-zsh, `./bootstrap.sh` then `./toolbox install`
@@ -49,10 +52,12 @@ plan for Fedora 43 or newer. A regular run requires Fedora.
   `/usr/bin/kubectl` through DNF, and older releases request
   `kubernetes-client`.
   [Fedora Kubernetes client builds](https://packages.fedoraproject.org/pkgs/kubernetes1.37/kubernetes1.37-client/)
-- Fedora lists the orphaned `tealdeer` package for releases 43 and 44.
-  Fedora 45 lacks an official package. DNF uses `--skip-unavailable` so
-  missing packages can be skipped.
+- The bootstrap prefers the Rust `tealdeer` client when Fedora still
+  ships it (releases 43 and 44). Otherwise it installs the Python `tldr`
+  package, which Fedora 45 provides. Both supply a `tldr` command, so
+  only one is installed.
   [Fedora tealdeer builds](https://packages.fedoraproject.org/pkgs/rust-tealdeer/tealdeer/)
+  · [Fedora tldr](https://packages.fedoraproject.org/pkgs/tldr/tldr/)
 
 ## Configure
 

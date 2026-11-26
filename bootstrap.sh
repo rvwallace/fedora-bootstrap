@@ -210,10 +210,35 @@ install_packages() {
     [0-3][0-9]|4[01]) kubectl_package=kubernetes-client ;;
   esac
   install_package_list Fedora "${DNF_ALL[@]}" "$kubectl_package"
+  install_tldr_client
   install_package_list Terra "${DNF_TERRA[@]}"
   if [[ -n "${EXTRA_PACKAGES[*]:-}" ]]; then
     install_package_list extra "${EXTRA_PACKAGES[@]}"
   fi
+}
+
+# tealdeer and tldr both provide a tldr command; install only one.
+install_tldr_client() {
+  if [[ "$DRY_RUN" != true ]] &&
+    { rpm -q tealdeer >/dev/null 2>&1 || rpm -q tldr >/dev/null 2>&1 || command -v tldr >/dev/null 2>&1; }; then
+    log "tldr client already installed"
+    return 0
+  fi
+
+  log "Installing tealdeer if available, otherwise tldr"
+  local dnf_install=(dnf --setopt='terra*.priority=100' --setopt='rpmfusion*.priority=110' install -y)
+  if [[ "$DRY_RUN" == true ]]; then
+    printf '[DRY-RUN]'
+    printf ' %q' sudo "${dnf_install[@]}" tealdeer
+    printf ' ||'
+    printf ' %q' sudo "${dnf_install[@]}" tldr
+    printf '\n'
+    return 0
+  fi
+
+  run_sudo "${dnf_install[@]}" tealdeer ||
+    run_sudo "${dnf_install[@]}" tldr ||
+    warn "Neither tealdeer nor tldr could be installed."
 }
 
 install_rust_and_cargo_tools() {
@@ -290,6 +315,17 @@ run_in_project() {
   fi
 }
 
+install_geistmono() {
+  if [[ "$DRY_RUN" != true ]] &&
+    fc-list -f '%{family}\n' | grep -E '^GeistMono (Nerd Font|NF)([ ,]|$)' >/dev/null; then
+    log "GeistMono Nerd Font already installed"
+    return 0
+  fi
+
+  ensure_project nerd-font-installer &&
+    run_in_project nerd-font-installer bash install-nerd-font.sh GeistMono
+}
+
 setup_lazyvim() {
   if [[ "$ENABLE_LAZYVIM" != true ]]; then
     log "LazyVim setup disabled"
@@ -347,6 +383,10 @@ main() {
   install_rust_and_cargo_tools
   local setup_failed=false
   local sc_zsh_ready=false
+  if ! install_geistmono; then
+    warn "GeistMono Nerd Font installation failed."
+    setup_failed=true
+  fi
   if ensure_project sc-zsh && run_in_project sc-zsh bash setup.sh; then
     sc_zsh_ready=true
   else

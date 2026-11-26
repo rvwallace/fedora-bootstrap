@@ -20,11 +20,40 @@ DOTFILES_INSTALL_PATH=${DOTFILES_INSTALL_PATH:-}
 log() { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
 warn() { printf "[WARN] %s\n" "$*" >&2; }
 
-run_sudo() {
-  if [[ $EUID -ne 0 ]]; then
-    sudo "$@"
+parse_args() {
+  DRY_RUN=false
+  while (($#)); do
+    case "$1" in
+      --dry-run) DRY_RUN=true ;;
+      -h|--help)
+        printf 'Usage: %s [--dry-run]\n' "$0"
+        exit 0
+        ;;
+      *)
+        warn "Unknown option: $1 (see --help)"
+        exit 2
+        ;;
+    esac
+    shift
+  done
+  readonly DRY_RUN
+}
+
+run() {
+  if [[ "$DRY_RUN" == true ]]; then
+    printf '[DRY-RUN]'
+    printf ' %q' "$@"
+    printf '\n'
   else
     "$@"
+  fi
+}
+
+run_sudo() {
+  if [[ $EUID -ne 0 ]]; then
+    run sudo "$@"
+  else
+    run "$@"
   fi
 }
 
@@ -46,19 +75,26 @@ ensure_fedora() {
   if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     source /etc/os-release
-    if [[ "${ID:-}" != fedora ]]; then
-      warn "This script targets Fedora; detected ${PRETTY_NAME:-${ID:-unknown}}"
-      exit 1
-    fi
+    [[ "${ID:-}" != fedora ]] || return 0
+    warn "This script targets Fedora (detected ${PRETTY_NAME:-${ID:-unknown}})."
   else
-    warn "Cannot determine OS; /etc/os-release missing."
+    warn "Cannot identify Fedora because /etc/os-release is missing."
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    warn "Showing the planned steps for Fedora 43 or newer."
+    VERSION_ID=
+  else
     exit 1
   fi
 }
 
 enable_rpmfusion() {
   local ver
-  ver=$(rpm -E %fedora)
+  if [[ "$DRY_RUN" == true ]]; then
+    ver=${VERSION_ID:-FEDORA_VERSION}
+  else
+    ver=$(rpm -E %fedora)
+  fi
   local free_pkg="rpmfusion-free-release-${ver}.noarch"
   local nonfree_pkg="rpmfusion-nonfree-release-${ver}.noarch"
   if rpm -q "$free_pkg" "$nonfree_pkg" >/dev/null 2>&1; then
@@ -73,7 +109,8 @@ enable_rpmfusion() {
 
 is_container() {
   # Detect if we're running in a container
-  [[ -f /.dockerenv ]] || [[ -n "${container:-}" ]] || grep -q container=lxc /proc/1/environ 2>/dev/null || [[ "$(systemd-detect-virt 2>/dev/null)" != "none" ]]
+  [[ -f /.dockerenv || -f /run/.containerenv || -n "${container:-}" ]] ||
+    systemd-detect-virt --container --quiet 2>/dev/null
 }
 
 enable_flathub() {
@@ -98,27 +135,36 @@ enable_flathub() {
     }
   fi
 
-  if flatpak remote-list | awk '{print $1}' | grep -qx flathub; then
+  if [[ "$DRY_RUN" != true ]] && flatpak remote-list --columns=name | grep -x flathub >/dev/null; then
     log "Flathub already enabled"
     return 0
   fi
 
   log "Enabling Flathub"
-  flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  run flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 }
 
 create_local_bin() {
   log "Ensuring ~/.local/bin exists and is in PATH"
-  mkdir -p "$HOME/.local/bin"
+  run mkdir -p "$HOME/.local/bin"
+  export PATH="$HOME/.local/bin:$PATH"
   # Add to ~/.bash_profile and ~/.zprofile if absent
   local export_line="export PATH=\"\$HOME/.local/bin:\$PATH\""
-  grep -Fq "$export_line" "$HOME/.bash_profile" 2>/dev/null || echo "$export_line" >>"$HOME/.bash_profile"
-  grep -Fq "$export_line" "$HOME/.zprofile" 2>/dev/null || echo "$export_line" >>"$HOME/.zprofile"
+  local profile
+  for profile in "$HOME/.bash_profile" "$HOME/.zprofile"; do
+    if ! grep -Fxq "$export_line" "$profile" 2>/dev/null; then
+      if [[ "$DRY_RUN" == true ]]; then
+        log "Would add $export_line to $profile"
+      else
+        printf '\n%s\n' "$export_line" >>"$profile"
+      fi
+    fi
+  done
 }
 
 install_dev_tools_group() {
   log "Installing development-tools group (if needed)"
-  if dnf group list --installed | grep -qi "development tools"; then
+  if [[ "$DRY_RUN" != true ]] && dnf group list --installed | grep -i "development tools" >/dev/null; then
     log "development-tools already installed"
     return 0
   fi
@@ -144,7 +190,7 @@ install_package_list() {
   local to_install=()
   for package in "$@"; do
     [[ -n "$package" ]] || continue
-    rpm -q --whatprovides "$package" >/dev/null 2>&1 || to_install+=("$package")
+    [[ "$DRY_RUN" != true ]] && rpm -q --whatprovides "$package" >/dev/null 2>&1 || to_install+=("$package")
   done
   if (("${#to_install[@]}" == 0)); then
     log "All $label packages already installed"
@@ -178,6 +224,10 @@ install_rust_and_cargo_tools() {
   # Install Rust if not available
   if ! command -v cargo >/dev/null 2>&1; then
     log "Installing Rust toolchain via rustup"
+    if [[ "$DRY_RUN" == true ]]; then
+      log "Would download and run the Rust installer from https://sh.rustup.rs"
+      return 0
+    fi
     if ! curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
       warn "Failed to install Rust"
       return 0
@@ -198,7 +248,7 @@ setup_helix_config() {
   local hx_conf="$hx_dir/config.toml"
   local source_conf="${ROOT_DIR}/files/helix/config.toml"
 
-  if [[ -f "$hx_conf" ]]; then
+  if [[ -e "$hx_conf" || -L "$hx_conf" ]]; then
     log "Helix config already exists; leaving as-is"
     return 0
   fi
@@ -209,8 +259,8 @@ setup_helix_config() {
   fi
 
   log "Installing Helix config from ${source_conf#"$ROOT_DIR"/} to ${hx_conf#"$HOME"/}"
-  mkdir -p "$hx_dir"
-  cp "$source_conf" "$hx_conf"
+  run mkdir -p "$hx_dir"
+  run cp "$source_conf" "$hx_conf"
 }
 
 setup_lazyvim() {
@@ -221,11 +271,11 @@ setup_lazyvim() {
     return 0
   fi
   log "Setting up LazyVim starter"
-  if ! git clone https://github.com/LazyVim/starter "$nvconf"; then
+  if ! run git clone https://github.com/LazyVim/starter "$nvconf"; then
     warn "Failed to setup LazyVim"
     return 0
   fi
-  rm -rf "$nvconf/.git"
+  run rm -rf "$nvconf/.git"
 }
 
 install_dotfiles_from_path() {
@@ -251,7 +301,7 @@ install_dotfiles_from_path() {
   fi
 
   log "Running dotfiles installer from $DOTFILES_INSTALL_PATH"
-  if ! (cd "$DOTFILES_INSTALL_PATH" && bash ./install.sh); then
+  if ! (cd "$DOTFILES_INSTALL_PATH" && run bash ./install.sh); then
     warn "Dotfiles installer reported failure"
     return 1
   fi
@@ -260,11 +310,13 @@ install_dotfiles_from_path() {
 }
 
 change_default_shell_to_zsh() {
-  if [[ "$SHELL" == *"zsh"* ]]; then
+  if [[ "${SHELL##*/}" == zsh ]]; then
     log "Default shell already zsh"
     return 0
   fi
-  if command -v zsh >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" == true ]]; then
+    log "Would set the default shell to zsh after successful setup"
+  elif command -v zsh >/dev/null 2>&1; then
     local zsh_path
     zsh_path="$(command -v zsh)"
     log "Changing default shell to $zsh_path"
@@ -276,6 +328,7 @@ change_default_shell_to_zsh() {
 
 
 main() {
+  parse_args "$@"
   ensure_fedora
   load_conf
   load_packages
@@ -302,7 +355,11 @@ main() {
   else
     warn "Skipping default shell change because dotfiles install did not run"
   fi
-  log "Bootstrap complete. You may need to log out/in for some changes to take effect."
+  if [[ "$DRY_RUN" == true ]]; then
+    log "Dry run complete."
+  else
+    log "Bootstrap complete. You may need to log out and back in."
+  fi
 }
 
 main "$@"
